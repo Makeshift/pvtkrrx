@@ -1278,11 +1278,20 @@ async function runAuto() {
   const existingJackettUrl = String(existingConfig?.jackettUrl || '').trim()
   const existingQbitUrl = String(existingConfig?.qbitUrl || '').trim()
 
+  // Env var fallbacks — used when no locally-installed service is detected and no
+  // saved config URL is present.  Intended for Docker Compose deployments where
+  // Prowlarr and qBittorrent run in separate containers reachable via Docker service
+  // DNS names (e.g. PVTKRRX_PROWLARR_URL=http://prowlarr:9696).
+  const envProwlarrUrl = sanitizeHttpUrlDefault(String(mergedEnv.PVTKRRX_PROWLARR_URL || '').trim(), '', { allowEmpty: true })
+  const envQbitUrl = sanitizeHttpUrlDefault(String(mergedEnv.PVTKRRX_QBIT_URL || '').trim(), '', { allowEmpty: true })
+
   let jackettUrl = ''
   if (prowlarr.url) {
     jackettUrl = sanitizeHttpUrlDefault(prowlarr.url, '', { allowEmpty: true })
   } else if (existingJackettUrl) {
     jackettUrl = sanitizeHttpUrlDefault(existingJackettUrl, '', { allowEmpty: true })
+  } else if (envProwlarrUrl) {
+    jackettUrl = envProwlarrUrl
   }
   let jackettApiKey = String(prowlarr.apiKey || existingConfig?.jackettApiKey || '').trim()
   let qbitUrl = ''
@@ -1290,6 +1299,8 @@ async function runAuto() {
     qbitUrl = sanitizeHttpUrlDefault(preferredQbitUrl || qbit.url || '', '', { allowEmpty: true })
   } else if (existingQbitUrl) {
     qbitUrl = sanitizeHttpUrlDefault(existingQbitUrl, '', { allowEmpty: true })
+  } else if (envQbitUrl) {
+    qbitUrl = envQbitUrl
   }
   let qbitUsername = String(qbit.username || existingConfig?.qbitUsername || '').trim()
   let qbitPassword = String(existingConfig?.qbitPassword || '').trim()
@@ -1302,6 +1313,9 @@ async function runAuto() {
     console.log(`• Prowlarr not detected on this host. Keeping saved URL: ${existingJackettUrl}`)
     console.log('  If Prowlarr runs on a different seedbox or VPS, leave this saved URL in place.')
     console.log('  If you intended Prowlarr to be on this server, install it locally and re-run the installer.')
+  } else if (jackettUrl) {
+    console.log(`• Prowlarr: using PVTKRRX_PROWLARR_URL from environment: ${jackettUrl}`)
+    console.log('  Set the API key in the PVTKRRX configure UI once Prowlarr is running.')
   } else {
     console.log('⚠ Prowlarr not detected on this host and no saved URL present.')
     console.log('  Leaving Prowlarr URL empty. Set it later in /configure:')
@@ -1318,6 +1332,9 @@ async function runAuto() {
   } else if (existingQbitUrl) {
     console.log(`• qBittorrent not detected on this host. Keeping saved URL: ${existingQbitUrl}`)
     console.log('  If qBittorrent runs on a different seedbox or VPS, leave this saved URL in place.')
+  } else if (qbitUrl) {
+    console.log(`• qBittorrent: using PVTKRRX_QBIT_URL from environment: ${qbitUrl}`)
+    console.log('  Set the username/password in the PVTKRRX configure UI once qBittorrent is running.')
   } else {
     console.log('⚠ qBittorrent not detected on this host and no saved URL present.')
     console.log('  Leaving qBittorrent URL empty. Set it later in /configure:')

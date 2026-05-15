@@ -1,22 +1,37 @@
 # PVTKRRX — Docker Compose self-host stack
 
-A three-container setup that runs PVTKRRX, qBittorrent, and Prowlarr without
-systemd, without a privileged container, and without `curl | sudo bash`.
+A three-container setup that mirrors what `scripts/install-selfhost.sh` does on
+a bare Linux host, but without systemd, without privileged containers, and
+without `curl | sudo bash`.
 
 ```
 ┌─────────────┐   Torznab    ┌──────────────┐
 │   Stremio   │ ──────────►  │    PVTKRRX   │ :7000
 │  (client)   │ ◄──────────  │  (self-host) │
-└─────────────┘  manifests / └──────────────┘
-                  streams          │  │
-                               search│  │ manage
-                                    ▼  ▼
+└─────────────┘  manifests / └──────┬───┬───┘
+                  streams           │   │
+                               search   manage
+                                    ↓   ↓
                              ┌──────────────┐   ┌──────────────┐
                              │   Prowlarr   │   │  qBittorrent │
                              │  indexers    │   │  WebUI       │
                              │  :9696       │   │  :8080       │
                              └──────────────┘   └──────────────┘
 ```
+
+## How it maps to install-selfhost.sh
+
+| install-selfhost.sh step | Docker equivalent |
+|---|---|
+| Install qBittorrent-nox via apt, write systemd unit | `lscr.io/linuxserver/qbittorrent` container |
+| Install Prowlarr binary, write systemd unit | `lscr.io/linuxserver/prowlarr` container |
+| Download Node.js | `node:22-slim` base image in `Dockerfile.selfhost` |
+| Download PVTKRRX source, run `npm install` | `COPY . .` + `npm ci` in `Dockerfile.selfhost` |
+| Run `node scripts/server-installer.js --auto` | `docker-entrypoint.sh` runs this on every container start |
+
+The entrypoint (`deploy/docker-entrypoint.sh`) runs `server-installer.js --auto`
+on every container start.  It is idempotent: existing secrets and saved config
+are preserved; only missing values are filled in.
 
 ## Requirements
 
@@ -26,35 +41,50 @@ systemd, without a privileged container, and without `curl | sudo bash`.
 ## Quick start
 
 ```bash
-# 1. Copy the env template and fill in your values
+# 1. Copy the env template and fill in the secrets section at minimum
 cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env
+$EDITOR deploy/.env        # set ENCRYPTION_SECRET, AUTH_TOKEN_SECRET at minimum
 
-# 2. Start the stack (from the repository root)
-docker compose -f deploy/docker-compose.selfhost.yml up -d
+# 2. Build and start the stack (from the repository root)
+docker compose -f deploy/docker-compose.selfhost.yml up -d --build
 
-# 3. Tail logs to confirm startup
+# 3. Tail logs to confirm startup and find the admin token
 docker compose -f deploy/docker-compose.selfhost.yml logs -f pvtkrrx
 ```
 
 ## Environment file
 
 All user-configurable settings live in `deploy/.env` (copied from
-`deploy/.env.example`).  The most important ones:
+`deploy/.env.example`).
 
-| Variable | Purpose | Required for remote use? |
+### Required before first start
+
+| Variable | Why |
+|---|---|
+| `ENCRYPTION_SECRET` | Encrypts `local-config.json` (Prowlarr API key, qBit credentials). Must be stable across container rebuilds. |
+| `AUTH_TOKEN_SECRET` | Signs install tokens. Must be stable. |
+
+Generate strong values with:
+```bash
+openssl rand -base64 32   # run twice — once for each secret
+```
+
+### Other important variables
+
+| Variable | Purpose | Default |
 |---|---|---|
-| `PVTKRRX_PUBLIC_BASE_URL` | Public HTTPS URL Stremio clients connect to | **Yes** |
-| `PVTKRRX_PLAYBACK_BASE_URL` | Stream playback origin (defaults to public URL) | No |
-| `PVTKRRX_SERVER_ADMIN_TOKEN` | Admin password for the configure UI | Recommended |
-| `PVTKRRX_SELF_HOST_HTTPS_MODE` | `skip` (default) or `domain` (built-in TLS) | No |
-| `PUID` / `PGID` | UID/GID for qBittorrent + Prowlarr file ownership | No (default 1000) |
-| `TZ` | Timezone for qBittorrent + Prowlarr | No (default UTC) |
-| `DOWNLOADS_PATH` | Host path for completed downloads (bind-mount variant) | No |
+| `PVTKRRX_SERVER_ADMIN_TOKEN` | Admin password for `/configure` UI | auto-generated |
+| `PVTKRRX_PUBLIC_BASE_URL` | Public HTTPS URL for remote Stremio installs | *(empty — local only)* |
+| `PVTKRRX_PLAYBACK_BASE_URL` | Stream playback origin | same as public URL |
+| `PVTKRRX_SELF_HOST_HTTPS_MODE` | `skip` or `domain` | `skip` |
+| `PVTKRRX_PROWLARR_URL` | Prowlarr URL inside Docker network | `http://prowlarr:9696` |
+| `PVTKRRX_QBIT_URL` | qBittorrent URL inside Docker network | `http://qbittorrent:8080` |
+| `PUID` / `PGID` | UID/GID for qBittorrent + Prowlarr file ownership | `1000` |
+| `TZ` | Timezone for qBittorrent + Prowlarr | `Etc/UTC` |
 
 ## URLs
 
-After the stack starts, open:
+After the stack starts:
 
 | Service | URL |
 |---|---|
@@ -63,36 +93,31 @@ After the stack starts, open:
 | qBittorrent WebUI | http://localhost:8080 |
 | Prowlarr UI | http://localhost:9696 |
 
-## Configuring Prowlarr and qBittorrent inside PVTKRRX
+## Configuring Prowlarr and qBittorrent in PVTKRRX
 
-PVTKRRX talks to Prowlarr and qBittorrent using Docker's internal service DNS.
-In the PVTKRRX configure UI use these URLs:
+The entrypoint pre-fills the PVTKRRX config with Docker service DNS URLs
+(`http://prowlarr:9696` and `http://qbittorrent:8080`) on first boot.
+You still need to add the API key and credentials after each service starts.
 
-- **Prowlarr URL:** `http://prowlarr:9696`
-- **qBittorrent URL:** `http://qbittorrent:8080`
+### qBittorrent
 
-These are also set as default environment variables in the compose file so
-PVTKRRX can suggest them in the configure UI automatically.
+1. Find the temporary admin password in the container logs:
+   ```bash
+   docker logs qbittorrent 2>&1 | grep -i 'temporary password'
+   ```
+2. Log into http://localhost:8080, change the password.
+3. In the PVTKRRX configure UI, set:
+   - **qBittorrent URL:** `http://qbittorrent:8080`
+   - **Username / password:** your new credentials
 
-### qBittorrent first-run credentials
+### Prowlarr
 
-The LinuxServer qBittorrent image prints the temporary admin password to its
-container logs on first start:
-
-```bash
-docker logs qbittorrent 2>&1 | grep -i 'temporary password'
-```
-
-Log in at http://localhost:8080, change the password, and then enter the new
-credentials in the PVTKRRX configure UI.
-
-### Prowlarr setup
-
-1. Open http://localhost:9696 and complete the Prowlarr setup wizard.
-2. Add your private tracker indexers.
-3. Note the **Prowlarr API key** from *Settings → General*.
-4. In the PVTKRRX configure UI enter the Prowlarr URL (`http://prowlarr:9696`)
-   and API key.
+1. Open http://localhost:9696 and complete the setup wizard.
+2. Add your private tracker indexers under *Indexers*.
+3. Copy the **API key** from *Settings → General*.
+4. In the PVTKRRX configure UI, set:
+   - **Prowlarr URL:** `http://prowlarr:9696`
+   - **API key:** the key from step 3
 
 ## Remote Stremio installs and HTTPS
 
@@ -104,41 +129,41 @@ will not work for remote installs.  Options:
    `PVTKRRX_PUBLIC_BASE_URL=https://your-domain.example` in `deploy/.env`.
 
 2. **Built-in TLS:** set `PVTKRRX_SELF_HOST_HTTPS_MODE=domain` and
-   `PVTKRRX_PUBLIC_BASE_URL=https://your-domain.example`.  The app will use a
-   self-signed certificate unless you mount a real certificate.
+   `PVTKRRX_PUBLIC_BASE_URL=https://your-domain.example`.
 
-For local-only or LAN use, HTTP on port 7000 is fine — install the addon via
-the configure UI on a device on the same network.
+For local-only or LAN use, HTTP on port 7000 is fine.
 
 ## Security warnings
 
 > ⚠️ **Do not expose qBittorrent or Prowlarr directly to the public internet.**
 >
-> - qBittorrent's WebUI and Prowlarr's UI are designed for trusted-network access
->   only.  If you need remote access to them, use a VPN or SSH tunnel.
-> - The default compose file binds qBittorrent `:8080` and Prowlarr `:9696` to
->   all host interfaces (`0.0.0.0`).  Restrict these with a firewall
->   (`ufw`, `iptables`, cloud security-group rules) if your host is internet-facing.
-> - Keep `PVTKRRX_SERVER_ADMIN_TOKEN` secret; it controls access to the
->   self-host configure UI.
+> - Both services are designed for trusted-network access only.
+> - The compose file binds their ports to all host interfaces (`0.0.0.0`).
+>   Restrict them with a firewall rule if your host is internet-facing:
+>   ```
+>   ufw deny 8080
+>   ufw deny 9696
+>   ```
+> - Keep `PVTKRRX_SERVER_ADMIN_TOKEN` and the two secrets (`ENCRYPTION_SECRET`,
+>   `AUTH_TOKEN_SECRET`) out of source control.  Add `deploy/.env` to your
+>   `.gitignore` if you manage this stack in a git repo.
 
 ## Volumes
 
 | Volume | Contents |
 |---|---|
-| `pvtkrrx_data` | PVTKRRX runtime state: saved config, tokens, poster raster cache, logs |
+| `pvtkrrx_data` | Runtime dir: `.env` (secrets), `local-config.json`, admin token, poster cache |
 | `qbittorrent_config` | qBittorrent settings, torrents, resume data |
 | `prowlarr_config` | Prowlarr database, indexer config |
-| `downloads` | Completed torrent downloads (shared between qBittorrent and PVTKRRX) |
+| `downloads` | Completed torrent files (shared between qBittorrent and PVTKRRX) |
 
-All volumes are Docker-managed by default.  To use a host bind-mount for
-downloads (e.g. to an existing media directory), see the commented-out
-`downloads` volume variant at the bottom of `docker-compose.selfhost.yml`.
+To use a host bind-mount for `downloads`, see the commented-out volume variant
+at the bottom of `docker-compose.selfhost.yml`.
 
 ## Updating
 
 ```bash
-# Pull new images for qBittorrent + Prowlarr
+# Pull new upstream images for qBittorrent + Prowlarr
 docker compose -f deploy/docker-compose.selfhost.yml pull qbittorrent prowlarr
 
 # Rebuild the PVTKRRX image from the latest source
@@ -154,4 +179,4 @@ docker compose -f deploy/docker-compose.selfhost.yml up -d
 docker compose -f deploy/docker-compose.selfhost.yml down
 ```
 
-Add `--volumes` to also delete all persistent data (irreversible).
+Add `--volumes` to also delete all persistent data (this is irreversible).

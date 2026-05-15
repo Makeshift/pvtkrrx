@@ -1,18 +1,28 @@
 # PVTKRRX self-host container.
 #
 # Builds the app from the repository source and runs it in self-host server
-# mode (PVTKRRX_SELF_HOST_MODE=true).  This image is intentionally separate
-# from the root Dockerfile, which is the hosted-relay / Coolify build.
+# mode (PVTKRRX_SELF_HOST_MODE=true), mirroring what scripts/install-selfhost.sh
+# does on a bare Linux host — but as a plain Docker container with no systemd.
 #
 # Build context must be the repository root, e.g.:
 #   docker build -f deploy/Dockerfile.selfhost -t pvtkrrx-selfhost .
 #
-# In practice this is handled automatically by docker-compose.selfhost.yml.
+# In practice the build context and dockerfile path are declared in
+# deploy/docker-compose.selfhost.yml, so `docker compose` handles this.
+#
+# On container start the entrypoint (deploy/docker-entrypoint.sh):
+#   1. Ensures the data volume directory exists.
+#   2. Symlinks /app/.env → <runtime_dir>/.env so generated secrets persist.
+#   3. Runs `node scripts/server-installer.js --auto` — the same auto-config
+#      step that install-selfhost.sh calls.  In Docker, Prowlarr/qBittorrent
+#      won't be found on localhost; the script falls back to PVTKRRX_PROWLARR_URL
+#      and PVTKRRX_QBIT_URL env vars (set in docker-compose.selfhost.yml).
+#   4. Starts the app with `exec node index.js`.
 
 FROM node:22-slim
 
 # System fonts required by sharp + Pango for sports-poster SVG rendering.
-# Matches the font set used in the root (hosted-relay) Dockerfile.
+# Matches the font set in the root (hosted-relay) Dockerfile.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         fontconfig \
         fonts-liberation \
@@ -40,7 +50,7 @@ RUN sh -c 'set -e; for f in "Bebas Neue" "Inter" "Playfair Display" "JetBrains M
 
 WORKDIR /app
 
-# Install production dependencies first so Docker layer cache can be reused
+# Install production dependencies first so the Docker layer can be reused
 # when only source files change.  Optional/native deps are included so sharp
 # works without a separate rebuild step.
 COPY package*.json ./
@@ -54,28 +64,39 @@ RUN npm ci --omit=dev --include=optional \
 # App source
 COPY . .
 
+# Copy and wire up the Docker-specific entrypoint.
+COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # ── Runtime configuration ──────────────────────────────────────────────────────
+
+# production mode: prevents the app from falling back to the dev placeholder
+# secret ("pvtkrrx-local-dev-secret-change-me") when ENCRYPTION_SECRET is not
+# yet set in the environment.  The entrypoint generates a real secret via
+# server-installer.js --auto before the app process starts.
+ENV NODE_ENV=production
+
 # Self-host server mode: enables disk-backed config, /selfhost/* routes, and
 # admin token validation.  Explicitly disables the hosted-relay code path.
 ENV PVTKRRX_SELF_HOST_MODE=true
 ENV PVTKRRX_HOSTED_RELAY=false
 
+# Default HTTPS mode: skip (no TLS inside the container).
+# Override with PVTKRRX_SELF_HOST_HTTPS_MODE=domain when a reverse proxy
+# (nginx, Caddy, Traefik …) terminates TLS in front of this container.
+ENV PVTKRRX_SELF_HOST_HTTPS_MODE=skip
+
+# Persist PVTKRRX runtime state (config, tokens, raster cache, logs) in a
+# named Docker volume so it survives container restarts and image rebuilds.
+ENV PVTKRRX_RUNTIME_DIR=/data/pvtkrrx
+
+# Default app port.
+ENV PORT=7000
+
 # Expand libuv worker thread pool so sharp can render multiple posters
 # concurrently (matches the hosted-relay Dockerfile setting).
 ENV UV_THREADPOOL_SIZE=16
 
-# Default HTTP port for the self-host runtime.
-ENV PORT=7000
-
-# Persist PVTKRRX runtime state (saved config, tokens, raster cache, logs) in
-# a named volume so it survives container restarts and re-builds.
-ENV PVTKRRX_RUNTIME_DIR=/data/pvtkrrx
-
-# Default HTTPS mode: skip (no TLS termination inside the container).
-# Override with PVTKRRX_SELF_HOST_HTTPS_MODE=domain when a reverse proxy
-# (nginx, Caddy, Traefik …) fronts the container.
-ENV PVTKRRX_SELF_HOST_HTTPS_MODE=skip
-
 EXPOSE 7000
 
-CMD ["node", "index.js"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
