@@ -1,0 +1,102 @@
+# PVTKRRX self-host container.
+#
+# Builds the app from the repository source and runs it in self-host server
+# mode (PVTKRRX_SELF_HOST_MODE=true), mirroring what scripts/install-selfhost.sh
+# does on a bare Linux host — but as a plain Docker container with no systemd.
+#
+# Build context must be the repository root, e.g.:
+#   docker build -f deploy/Dockerfile.selfhost -t pvtkrrx-selfhost .
+#
+# In practice the build context and dockerfile path are declared in
+# deploy/docker-compose.selfhost.yml, so `docker compose` handles this.
+#
+# On container start the entrypoint (deploy/docker-entrypoint.sh):
+#   1. Ensures the data volume directory exists.
+#   2. Symlinks /app/.env → <runtime_dir>/.env so generated secrets persist.
+#   3. Runs `node scripts/server-installer.js --auto` — the same auto-config
+#      step that install-selfhost.sh calls.  In Docker, Prowlarr/qBittorrent
+#      won't be found on localhost; the script falls back to PVTKRRX_PROWLARR_URL
+#      and PVTKRRX_QBIT_URL env vars (set in docker-compose.selfhost.yml).
+#   4. Starts the app with `exec node index.js`.
+
+FROM node:22-slim
+
+# System fonts required by sharp + Pango for sports-poster SVG rendering.
+# Matches the font set in the root (hosted-relay) Dockerfile.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        fontconfig \
+        fonts-liberation \
+        fonts-dejavu-core \
+        fonts-noto-core \
+        fonts-jetbrains-mono \
+        ca-certificates \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bundle the canonical branded fonts (Bebas Neue, Inter, Playfair Display).
+RUN mkdir -p /usr/share/fonts/truetype/pvtkrrx && cd /usr/share/fonts/truetype/pvtkrrx \
+    && wget -q https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf \
+    && wget -q https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf -O Inter-Variable.ttf \
+    && wget -q https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf -O PlayfairDisplay-Variable.ttf \
+    && wget -q https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay-Italic%5Bwght%5D.ttf -O PlayfairDisplay-Italic-Variable.ttf \
+    && fc-cache -fv >/dev/null
+
+# Verify all four font families resolved; fail fast so broken-text deploys
+# are caught at build time rather than at runtime.
+RUN sh -c 'set -e; for f in "Bebas Neue" "Inter" "Playfair Display" "JetBrains Mono"; do \
+        if ! fc-list | grep -qi "$f"; then echo "FONT MISSING: $f"; exit 1; fi; \
+        echo "OK: $f"; \
+    done'
+
+WORKDIR /app
+
+# Install production dependencies first so the Docker layer can be reused
+# when only source files change.  Optional/native deps are included so sharp
+# works without a separate rebuild step.
+COPY package*.json ./
+RUN npm ci --omit=dev --include=optional \
+    && npm rebuild sharp \
+    && test -d node_modules/@img/sharp-linux-x64 \
+    && test -d node_modules/@img/sharp-libvips-linux-x64 \
+    && find node_modules/@img/sharp-libvips-linux-x64 -name 'libvips-cpp.so*' -print -quit | grep -q . \
+    && node -e "const sharp = require('sharp'); console.log('sharp ok', sharp.versions.sharp, sharp.versions.vips)"
+
+# App source
+COPY . .
+
+# Copy and wire up the Docker-specific entrypoint.
+COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# ── Runtime configuration ──────────────────────────────────────────────────────
+
+# production mode: prevents the app from falling back to the dev placeholder
+# secret ("pvtkrrx-local-dev-secret-change-me") when ENCRYPTION_SECRET is not
+# yet set in the environment.  The entrypoint generates a real secret via
+# server-installer.js --auto before the app process starts.
+ENV NODE_ENV=production
+
+# Self-host server mode: enables disk-backed config, /selfhost/* routes, and
+# admin token validation.  Explicitly disables the hosted-relay code path.
+ENV PVTKRRX_SELF_HOST_MODE=true
+ENV PVTKRRX_HOSTED_RELAY=false
+
+# Default HTTPS mode: skip (no TLS inside the container).
+# Override with PVTKRRX_SELF_HOST_HTTPS_MODE=domain when a reverse proxy
+# (nginx, Caddy, Traefik …) terminates TLS in front of this container.
+ENV PVTKRRX_SELF_HOST_HTTPS_MODE=skip
+
+# Persist PVTKRRX runtime state (config, tokens, raster cache, logs) in a
+# named Docker volume so it survives container restarts and image rebuilds.
+ENV PVTKRRX_RUNTIME_DIR=/data/pvtkrrx
+
+# Default app port.
+ENV PORT=7000
+
+# Expand libuv worker thread pool so sharp can render multiple posters
+# concurrently (matches the hosted-relay Dockerfile setting).
+ENV UV_THREADPOOL_SIZE=16
+
+EXPOSE 7000
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

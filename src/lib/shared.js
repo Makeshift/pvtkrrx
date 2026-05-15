@@ -2802,5 +2802,6 @@ module.exports = {
   saveSecureJsonFile,
   redactSensitiveText,
   createRedactingLogger,
-  installConsoleRedaction
+  installConsoleRedaction,
+  serverAdminState
 }

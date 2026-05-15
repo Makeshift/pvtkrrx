@@ -1,0 +1,136 @@
+# PVTKRRX self-host stack
+#
+# Three separate containers — no systemd required:
+#   pvtkrrx      — the Stremio addon / configure UI (port 7000)
+#   qbittorrent  — torrent client WebUI (port 8080)
+#   prowlarr     — indexer manager / Torznab proxy (port 9696)
+#
+# Quick start:
+#   cp deploy/.env.example deploy/.env   # then edit deploy/.env
+#   docker compose -f deploy/docker-compose.selfhost.yml up -d
+#
+# See deploy/README.md for full setup instructions.
+
+services:
+
+  # ── PVTKRRX ─────────────────────────────────────────────────────────────────
+  pvtkrrx:
+    build:
+      # Build context is the repository root so `COPY . .` in the Dockerfile
+      # picks up the full app source.
+      context: ..
+      dockerfile: deploy/Dockerfile.selfhost
+    container_name: pvtkrrx
+    restart: unless-stopped
+    ports:
+      - "${PVTKRRX_HOST_PORT:-7000}:7000"
+    environment:
+      # ── Secrets ────────────────────────────────────────────────────────────
+      # REQUIRED: set both in deploy/.env before first start so they are stable
+      # across container rebuilds.  If left empty the entrypoint generates random
+      # values and persists them on the data volume — but rotating the image will
+      # then lose all saved config until you copy them back.
+      ENCRYPTION_SECRET: "${ENCRYPTION_SECRET:-}"
+      AUTH_TOKEN_SECRET: "${AUTH_TOKEN_SECRET:-}"
+
+      # Admin password for the /configure UI.  Auto-generated and persisted if
+      # left empty, but setting one here makes it predictable.
+      PVTKRRX_SERVER_ADMIN_TOKEN: "${PVTKRRX_SERVER_ADMIN_TOKEN:-}"
+
+      # ── HTTPS / public URL ──────────────────────────────────────────────────
+      PVTKRRX_SELF_HOST_HTTPS_MODE: "${PVTKRRX_SELF_HOST_HTTPS_MODE:-skip}"
+      # Set this to your real HTTPS URL for remote Stremio installs.
+      PVTKRRX_PUBLIC_BASE_URL: "${PVTKRRX_PUBLIC_BASE_URL:-}"
+      PVTKRRX_PLAYBACK_BASE_URL: "${PVTKRRX_PLAYBACK_BASE_URL:-}"
+
+      # ── Service URLs ────────────────────────────────────────────────────────
+      # These use Docker service DNS names.  server-installer.js --auto reads
+      # them as fallbacks when no locally-installed Prowlarr/qBittorrent is
+      # detected (which is always the case in a multi-container setup).
+      # The values get written into local-config.json on first boot so the
+      # /configure UI shows them pre-filled.
+      PVTKRRX_PROWLARR_URL: "${PVTKRRX_PROWLARR_URL:-http://prowlarr:9696}"
+      PVTKRRX_QBIT_URL: "${PVTKRRX_QBIT_URL:-http://qbittorrent:8080}"
+
+      # ── Auto-connect credentials ─────────────────────────────────────────────
+      # Prowlarr API key is auto-read from the mounted config volume by the
+      # entrypoint.  Set PVTKRRX_PROWLARR_API_KEY here only to override that.
+      PVTKRRX_PROWLARR_API_KEY: "${PVTKRRX_PROWLARR_API_KEY:-}"
+      # qBittorrent credentials — must match PASSWORD_OVERRIDE below.
+      PVTKRRX_QBIT_USERNAME: "${PVTKRRX_QBIT_USERNAME:-admin}"
+      PVTKRRX_QBIT_PASSWORD: "${QBITTORRENT_PASSWORD:-}"
+      # Path where the entrypoint will look for Prowlarr's config.xml.
+      PROWLARR_CONFIG_PATH: "/prowlarr-config/config.xml"
+
+      # ── Misc ────────────────────────────────────────────────────────────────
+      # Expand libuv thread pool for concurrent sharp poster rendering.
+      UV_THREADPOOL_SIZE: "16"
+    volumes:
+      # Persist PVTKRRX runtime state (config, admin token, poster raster cache).
+      - pvtkrrx_data:/data/pvtkrrx
+      # Share the downloads directory so PVTKRRX can serve completed files.
+      - downloads:/downloads
+      # Read-only mount of Prowlarr's config directory so the entrypoint can
+      # auto-read the API key from config.xml without a shared secret.
+      - prowlarr_config:/prowlarr-config:ro
+    depends_on:
+      - qbittorrent
+      - prowlarr
+
+  # ── qBittorrent ──────────────────────────────────────────────────────────────
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "${TZ:-Etc/UTC}"
+      # WebUI port inside the container (must match the port mapping below).
+      WEBUI_PORT: "8080"
+      # Pre-set the WebUI password so PVTKRRX can log in without manual setup.
+      # Must match QBITTORRENT_PASSWORD in deploy/.env.
+      PASSWORD_OVERRIDE: "${QBITTORRENT_PASSWORD:-}"
+    ports:
+      - "${QBITTORRENT_HOST_PORT:-8080}:8080"
+      # BitTorrent listening ports — these are intentionally public-facing for
+      # peer connectivity on private trackers.  They differ from the WebUI port
+      # (8080), which should be firewalled from the public internet.
+      - "6881:6881"
+      - "6881:6881/udp"
+    volumes:
+      - qbittorrent_config:/config
+      # Completed downloads land here and are shared with PVTKRRX.
+      - downloads:/downloads
+
+  # ── Prowlarr ─────────────────────────────────────────────────────────────────
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "${TZ:-Etc/UTC}"
+    ports:
+      - "${PROWLARR_HOST_PORT:-9696}:9696"
+    volumes:
+      - prowlarr_config:/config
+
+volumes:
+  pvtkrrx_data:
+  qbittorrent_config:
+  prowlarr_config:
+  # Downloads volume shared between qBittorrent (write) and PVTKRRX (read).
+  # To use a host bind-mount instead (e.g. an existing media directory), replace
+  # the volume definition and uncomment the driver_opts block:
+  #
+  #   downloads:
+  #     driver: local
+  #     driver_opts:
+  #       type: none
+  #       o: bind
+  #       device: "${DOWNLOADS_PATH:-./downloads}"
+  #
+  # Then create the directory first: mkdir -p ./downloads
+  downloads:
