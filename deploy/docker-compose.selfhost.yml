@@ -52,6 +52,16 @@ services:
       PVTKRRX_PROWLARR_URL: "${PVTKRRX_PROWLARR_URL:-http://prowlarr:9696}"
       PVTKRRX_QBIT_URL: "${PVTKRRX_QBIT_URL:-http://qbittorrent:8080}"
 
+      # ── Auto-connect credentials ─────────────────────────────────────────────
+      # Prowlarr API key is auto-read from the mounted config volume by the
+      # entrypoint.  Set PVTKRRX_PROWLARR_API_KEY here only to override that.
+      PVTKRRX_PROWLARR_API_KEY: "${PVTKRRX_PROWLARR_API_KEY:-}"
+      # qBittorrent credentials — must match PASSWORD_OVERRIDE below.
+      PVTKRRX_QBIT_USERNAME: "${PVTKRRX_QBIT_USERNAME:-admin}"
+      PVTKRRX_QBIT_PASSWORD: "${QBITTORRENT_PASSWORD:-}"
+      # Path where the entrypoint will look for Prowlarr's config.xml.
+      PROWLARR_CONFIG_PATH: "/prowlarr-config/config.xml"
+
       # ── Misc ────────────────────────────────────────────────────────────────
       # Expand libuv thread pool for concurrent sharp poster rendering.
       UV_THREADPOOL_SIZE: "16"
@@ -60,6 +70,9 @@ services:
       - pvtkrrx_data:/data/pvtkrrx
       # Share the downloads directory so PVTKRRX can serve completed files.
       - downloads:/downloads
+      # Read-only mount of Prowlarr's config directory so the entrypoint can
+      # auto-read the API key from config.xml without a shared secret.
+      - prowlarr_config:/prowlarr-config:ro
     depends_on:
       - qbittorrent
       - prowlarr
@@ -75,6 +88,9 @@ services:
       TZ: "${TZ:-Etc/UTC}"
       # WebUI port inside the container (must match the port mapping below).
       WEBUI_PORT: "8080"
+      # Pre-set the WebUI password so PVTKRRX can log in without manual setup.
+      # Must match QBITTORRENT_PASSWORD in deploy/.env.
+      PASSWORD_OVERRIDE: "${QBITTORRENT_PASSWORD:-}"
     ports:
       - "${QBITTORRENT_HOST_PORT:-8080}:8080"
       # BitTorrent listening ports — these are intentionally public-facing for

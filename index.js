@@ -95,7 +95,8 @@ const {
   primeTorrentForStreaming, loadTorrentPlaybackState,
   autoDeleteWatchedEnabled, watchedDeleteGraceMs, scheduleWatchedCleanup,
   isMagnetLink, parseTorrentFileName, fetchTorrentPayload,
-  mintHostedConfigToken, resolveLanPair, lanPairOfflineResponse, maybeLanPairRedirect
+  mintHostedConfigToken, resolveLanPair, lanPairOfflineResponse, maybeLanPairRedirect,
+  serverAdminState
 } = shared
 
 const app = express()
@@ -2937,6 +2938,19 @@ function startLocalServers(options = {}) {
   httpServer.listen(port, () => {
     logger.log(`PVTKRRX HTTP  → http://localhost:${port}`)
     logger.log(`Configure:      http://localhost:${port}/configure`)
+    if (SELF_HOST_SERVER_MODE) {
+      const publicBase = String(process.env.PVTKRRX_PUBLIC_BASE_URL || '').replace(/\/+$/, '')
+      const base = publicBase || `http://localhost:${port}`
+      const adminToken = serverAdminState.token
+      logger.log(`─────────────────────────────────────────────────────────`)
+      logger.log(`STREMIO INSTALL URL`)
+      logger.log(`  ${base}/selfhost/manifest.json?mode=hosted`)
+      if (adminToken) {
+        logger.log(`CONFIGURE URL (pre-authenticated)`)
+        logger.log(`  ${base}/configure#serverAdminToken=${encodeURIComponent(adminToken)}`)
+      }
+      logger.log(`─────────────────────────────────────────────────────────`)
+    }
     if (enableLanAlias && !lanAlias) {
       lanAlias = startLanAlias({ hostname: mdnsHost, port, logger })
       state.lanAlias = lanAlias
