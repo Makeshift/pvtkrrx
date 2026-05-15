@@ -35,6 +35,7 @@ class QBitClient {
     this.username = username
     this.password = password
     this.sid = null
+    this.cookieName = 'SID' // qBit 4.x default; overwritten on login for 5.x
     // Try localhost/no-auth first, then fall back to cookie auth when needed.
     this.noAuth = true
     this.cacheKey = buildSessionCacheKey(this.url, this.username, this.password)
@@ -45,6 +46,7 @@ class QBitClient {
     const cached = readCachedSession(this.cacheKey)
     if (!cached) return
     this.sid = cached.sid || null
+    if (cached.cookieName) this.cookieName = cached.cookieName
     if (typeof cached.noAuth === 'boolean' && (cached.noAuth || this.username)) {
       this.noAuth = cached.noAuth
     }
@@ -53,6 +55,7 @@ class QBitClient {
   rememberSession() {
     sessionCache.set(this.cacheKey, {
       sid: this.sid || '',
+      cookieName: this.cookieName || 'SID',
       noAuth: this.noAuth === true,
       expiresAt: Date.now() + SESSION_CACHE_TTL_MS
     })
@@ -112,13 +115,22 @@ class QBitClient {
     }
 
     const body = await res.text()
-    if (body.trim() !== 'Ok.') throw new Error('qBit login: invalid credentials')
+    // qBittorrent 4.x responds with 200 + body 'Ok.' on success.
+    // qBittorrent 5.x responds with 204 No Content (empty body) on success.
+    // Anything else (200 + non-Ok body) means wrong credentials.
+    if (res.status !== 204 && body.trim() !== 'Ok.') {
+      throw new Error('qBit login: invalid credentials')
+    }
 
     const setCookie = res.headers.get('set-cookie') || ''
-    const match = setCookie.match(/SID=([^;]+)/)
+    // qBit 4.x: SID=<value>
+    // qBit 5.x: QBT_SID_<PORT>=<value>
+    // Capture the full cookie name so we can send it back correctly.
+    const match = setCookie.match(/\b([A-Za-z0-9_]*SID[A-Za-z0-9_]*)=([^;]+)/)
     if (!match) throw new Error('qBit login: no SID cookie')
 
-    this.sid = match[1]
+    this.cookieName = match[1]
+    this.sid = match[2]
     this.noAuth = false
     this.rememberSession()
     return this.sid
@@ -131,7 +143,7 @@ class QBitClient {
 
     const doFetch = async (withCookie) => {
       const headers = { ...(options.headers || {}) }
-      if (withCookie && this.sid) headers.Cookie = `SID=${this.sid}`
+      if (withCookie && this.sid) headers.Cookie = `${this.cookieName || 'SID'}=${this.sid}`
       const res = await fetch(`${this.url}${path}`, {
         method,
         headers,

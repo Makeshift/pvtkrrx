@@ -2942,14 +2942,16 @@ function startLocalServers(options = {}) {
       const publicBase = String(process.env.PVTKRRX_PUBLIC_BASE_URL || '').replace(/\/+$/, '')
       const base = publicBase || `http://localhost:${port}`
       const adminToken = serverAdminState.token
-      logger.log(`─────────────────────────────────────────────────────────`)
-      logger.log(`STREMIO INSTALL URL`)
-      logger.log(`  ${base}/selfhost/manifest.json?mode=hosted`)
+      // Write directly to stdout — bypasses the redacting logger so the token
+      // and URL are never masked in the startup banner.
+      process.stdout.write(`\n─────────────────────────────────────────────────────────\n`)
+      process.stdout.write(`STREMIO INSTALL URL\n`)
+      process.stdout.write(`  ${base}/selfhost/manifest.json?mode=hosted\n`)
       if (adminToken) {
-        logger.log(`CONFIGURE URL (pre-authenticated)`)
-        logger.log(`  ${base}/configure#serverAdminToken=${encodeURIComponent(adminToken)}`)
+        process.stdout.write(`CONFIGURE URL (pre-authenticated)\n`)
+        process.stdout.write(`  ${base}/configure#serverAdminToken=${encodeURIComponent(adminToken)}\n`)
       }
-      logger.log(`─────────────────────────────────────────────────────────`)
+      process.stdout.write(`─────────────────────────────────────────────────────────\n\n`)
     }
     if (enableLanAlias && !lanAlias) {
       lanAlias = startLanAlias({ hostname: mdnsHost, port, logger })
