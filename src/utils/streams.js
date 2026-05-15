@@ -143,7 +143,7 @@ function buildOnSeedboxStream(item, fileUrl, fileName, videoSize, config, parsed
     url: fileUrl,
     thumbnail: PVTKRRX_LOGO_URL,
     behaviorHints: {
-      notWebReady: true,
+      notWebReady: false,
       bingeGroup: buildBingeGroup(item, parsed, 'seedbox'),
       filename: fileName,
       sourceSeeders: Math.max(0, Number(item.seeders || 0)),
@@ -178,7 +178,7 @@ function buildOnBufferingStream(item, fileUrl, fileName, videoSize, config, pars
     url: fileUrl,
     thumbnail: PVTKRRX_LOGO_URL,
     behaviorHints: {
-      notWebReady: true,
+      notWebReady: false,
       bingeGroup: buildBingeGroup(item, parsed, 'buffering'),
       filename: fileName,
       sourceSeeders: Math.max(0, Number(item.seeders || 0)),
